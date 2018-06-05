@@ -1,0 +1,6 @@
+usr/local/bin/dacash-qt usr/bin
+share/pixmaps/dacash32.xpm usr/share/pixmaps
+share/pixmaps/dacash16.xpm usr/share/pixmaps
+share/pixmaps/dacash128.png usr/share/pixmaps
+debian/dacash-qt.desktop usr/share/applications
+debian/dacash-qt.protocol usr/share/kde4/services/

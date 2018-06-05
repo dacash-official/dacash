@@ -1,0 +1,3 @@
+debian/manpages/dacashd.1
+debian/manpages/dacash.conf.5
+debian/manpages/dacash-cli.1
