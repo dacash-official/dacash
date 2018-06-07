@@ -7,7 +7,7 @@ architectures:
 packages:
 - "libssl-dev"
 - "autoconf"
-reference_datetime: "2018-06-07 00:00:00"
+reference_datetime: "2018-06-07 12:00:00"
 remotes:
 - "url": "https://github.com/dacash-official/dacash-detached-sigs.git"
   "dir": "signature"

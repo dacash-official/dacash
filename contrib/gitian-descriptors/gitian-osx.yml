@@ -1,5 +1,5 @@
 ---
-name: "dacash-osx-1.0.0.0"
+name: "dacash-osx-1.0.0.1"
 enable_cache: true
 suites:
 - "trusty"
@@ -21,7 +21,7 @@ packages:
 - "libbz2-dev"
 - "ca-certificates"
 - "python"
-reference_datetime: "2018-06-07 00:00:00"
+reference_datetime: "2018-06-07 12:00:00"
 remotes:
 - "url": "https://github.com/dacash-official/dacash.git"
   "dir": "dacash"
