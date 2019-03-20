@@ -9,47 +9,100 @@
 #   LTC: LeZmPXHuQEhkd8iZY7a2zVAwF7DCWir2FF
 #
 
+RUNAS="root"
+
+COIN_NAME='DACash'
+coin_name="dacash"
+COIN_DATA="dacashcore"
+COIN_PORT=56000
+COIN_RPCPORT=56001
+
+CONFIGHOME="$(eval echo "~$RUNAS")"
+CONFIGFOLDER="${CONFIGHOME}/.${COIN_DATA}"
+CONFIG_FILE="${coin_name}.conf"
+COIN_DAEMON="${coin_name}d"
+COIN_SERVICE="${coin_name}"
+COIN_CLI="${coin_name}-cli"
+
 TMP_FOLDER=$(mktemp -d)
-CONFIG_FILE='dacash.conf'
-CONFIGFOLDER='/root/.dacashcore'
-COIN_DAEMON='dacashd'
-COIN_CLI='dacash-cli'
 COIN_PATH='/usr/local/bin/'
 KERN_ARCH=$(getconf LONG_BIT)
 COIN_TGZ="https://github.com/dacash-official/dacash/releases/download/v1.0.0.1/dacashcore-1.0.0-linux${KERN_ARCH}.tar.gz"
 COIN_ZIP=$(echo $COIN_TGZ | awk -F'/' '{print $NF}')
-COIN_NAME='DACash'
-COIN_SERVICE='dacash'
-COIN_PORT=56000
-RPC_PORT=56001
 
 NODEIP=$(curl -s4 icanhazip.com)
 
+UFWD="/etc/ufw/applications.d"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+BLINK='\033[5m'
 NC='\033[0m'
 
 
-function checks() {
-  if [[ $(lsb_release -d) != *16.04* ]] && [[ $(lsb_release -d) != *17.10* ]] && [[ $(lsb_release -d) != *18.04* ]]; then
-    echo -e "${RED}You are not running Ubuntu 16.04 or 18.04. Installation is cancelled.${NC}"
-    exit 1
+function check_system() {
+  local r=$(lsb_release -d)
+  if [[ $r != *16.04* ]] && [[ $r != *17.10* ]] && [[ $r != *18.04* ]] && [[ $r != *18.10* ]]; then
+    echo -e "${RED}You are not running Ubuntu 16.04, 17.10, 18.04 or 18.10.${NC} Your system version is ${GREEN}$r${NC}."
+    ask_yn "Do you want to try the installation anyway (type ${GREEN}Y${NC} or ${RED}N${NC}): "
+    if [ "$?" = "0" ]; then
+      echo -e "${RED}Installation aborted.${NC}"
+      exit 1
+    else
+      echo -e "${GREEN}Installing on unsupported system. Results may vary.${NC}"
+    fi
   fi
 
   if [[ $EUID -ne 0 ]]; then
      echo -e "${RED}$0 must be run as root.${NC}"
      exit 1
   fi
+}
 
-  if [ -n "$(pidof $COIN_DAEMON)" ] || [ -e "$COIN_DAEMON" ]; then
-    echo -e "${RED}$COIN_NAME is already installed.${NC}"
-    exit 1
+function check_daemon() {
+  if [ -n "$(pidof "$COIN_DAEMON")" ]; then
+    ask_yn "${RED}$COIN_NAME is already installed and running. Try to stop the service for upgrade${NC} (type ${GREEN}Y${NC} or ${RED}N${NC}): "
+    if [ "$?" = "0" ]; then
+      echo -e "${RED}Stop the daemon first to reinstall, aborting.${NC}"
+      exit 1
+    fi
+    systemctl stop $COIN_SERVICE.service &>/dev/null
+    if [ -n "$(pidof "$COIN_DAEMON")" ]; then
+      echo -e "${RED}Unable to stop $COIN_SERVICE.service, aborting.${NC}"
+      exit 1
+    fi
   fi
 }
 
+function ask_yn() {
+  echo -en "$1"
+  local answer
+  while read -r -n 1 -s answer; do
+    if [[ $answer = [YyNn] ]]; then
+      [[ $answer = [Yy] ]] && retval=1 && echo "YES"
+      [[ $answer = [Nn] ]] && retval=0 && echo "NO"
+      break
+    fi
+  done
+  return $retval
+}
+
+function ask_components() {
+  echo -e "You are going to install or upgrade ${GREEN}$COIN_NAME masternode${NC} and/or ${GREEN}Sentinel${NC}."
+  echo -e "This script will also install the complete build environment, so you may compile/install any other coins later."
+  echo -e ""
+  ask_yn "Install masternode and build environment (type ${GREEN}Y${NC} or ${RED}N${NC}): "
+  INSTALL_MASTERNODE=$?
+
+  ask_yn "Install Sentinel (type ${GREEN}Y${NC} or ${RED}N${NC}): "
+  INSTALL_SENTINEL=$?
+}
+
 function prepare_system() {
-  echo -e "Preparing the system to install ${GREEN}$COIN_NAME${NC} masternode."
-  echo -e "This might take up to 15 minutes, please be patient."
+  echo -e "${GREEN}This process might take up to 15 minutes, please be patient.${NC}"
+
+  echo -e "${GREEN}Updating system packages...${NC}"
+  add-apt-repository universe
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -y -qq upgrade
@@ -78,7 +131,7 @@ function prepare_system() {
 }
 
 function download_node() {
-  echo -e "Fetching ${GREEN}$COIN_NAME${NC} binary distribution..."
+  echo -e "${GREEN}Fetching $COIN_NAME binary distribution...${NC}"
   cd $TMP_FOLDER
   wget $COIN_TGZ
   if [ "$?" -gt "0" ];
@@ -93,6 +146,7 @@ function download_node() {
 }
 
 function get_ip() {
+  echo -e "${GREEN}Autodetecting IP address(es)...${NC}"
   declare -a NODE_IPS
   for ips in $(netstat -i | awk '!/Kernel|Iface|lo/ {print $1," "}'); do
     NODE_IPS+=($(curl --interface $ips --connect-timeout 2 -s4 icanhazip.com))
@@ -111,6 +165,17 @@ function get_ip() {
   else
     NODEIP=${NODE_IPS[0]}
   fi
+
+  if [ -z "$NODEIP" ]; then
+    echo
+    echo -e "${RED}Unable to detect external IP. Press Ctrl-C to abort or any other key to retry IP autodetect.${NC}"
+    local dummy
+    read -rsn1 dummy
+    return 1
+  else
+    echo -e "Masternode external IP address: ${GREEN}$NODEIP${NC}"
+    return 0
+  fi
 }
 
 function create_config() {
@@ -120,15 +185,14 @@ function create_config() {
   cat <<EOF >$CONFIGFOLDER/$CONFIG_FILE
 rpcuser=$RPCUSER
 rpcpassword=$RPCPASSWORD
-#rpcport=$RPC_PORT
-#rpcallowip=127.0.0.1
+
+#bind=$NODEIP
+port=$COIN_PORT
+rpcport=$COIN_RPCPORT
 
 listen=1
 server=1
 daemon=0
-
-#bind=$NODEIP
-port=$COIN_PORT
 
 EOF
 }
@@ -137,19 +201,19 @@ function create_key() {
   echo -e "Enter your ${RED}$COIN_NAME Masternode Private Key${NC}. Leave it blank to generate a new ${RED}Masternode Private Key${NC} for you:"
   read -e COINKEY
   if [[ -z "$COINKEY" ]]; then
-    $COIN_PATH$COIN_DAEMON -daemon
+    $COIN_PATH$COIN_DAEMON -datadir=$CONFIGFOLDER -conf=$CONFIGFOLDER/$CONFIG_FILE -daemon
     sleep 30
     if [ -z "$(ps axo cmd:100 | grep $COIN_DAEMON)" ]; then
-      echo -e "${RED}$COIN_NAME server couldn not start. Check /var/log/syslog for errors.{$NC}"
+      echo -e "${RED}$COIN_NAME server could not start. Check /var/log/syslog for errors.{$NC}"
       exit 1
     fi
-    COINKEY=$($COIN_PATH$COIN_CLI masternode genkey)
+    COINKEY=$($COIN_PATH$COIN_CLI -datadir=$CONFIGFOLDER -conf=$CONFIGFOLDER/$CONFIG_FILE masternode genkey)
     if [ "$?" -gt "0" ]; then
       echo -e "${RED}Wallet not fully loaded. Let us wait and try again to generate the Private Key${NC}"
       sleep 30
       COINKEY=$($COIN_PATH$COIN_CLI masternode genkey)
     fi
-    $COIN_PATH$COIN_CLI stop
+    $COIN_PATH$COIN_CLI -datadir=$CONFIGFOLDER -conf=$CONFIGFOLDER/$CONFIG_FILE stop
   fi
 }
 
@@ -170,6 +234,31 @@ function enable_firewall() {
   echo "y" | ufw enable
 }
 
+function enable_firewall_app() {
+  echo -e "Installing and setting up ${GREEN}OpenSSH${NC} and ${GREEN}${COIN_NAME}${NC} firewall applications"
+
+  if [ ! -f "$UFWD/openssh-server" ]; then
+    cat <<EOF >$UFWD/openssh-server
+[OpenSSH]
+title=Secure shell server, an rshd replacement
+description=OpenSSH is a free implementation of the Secure Shell protocol.
+ports=22/tcp
+EOF
+  fi
+
+  cat <<EOF >$UFWD/$coin_name
+[$COIN_NAME]
+title=$COIN_NAME daemon
+description=$COIN_NAME daemon P2P port.
+ports=$COIN_PORT/tcp
+EOF
+
+  ufw allow "OpenSSH"
+  ufw allow "$COIN_NAME"
+  ufw default allow outgoing
+  echo "y" | ufw enable
+}
+
 function configure_systemd() {
   cat <<EOF >/etc/systemd/system/$COIN_SERVICE.service
 [Unit]
@@ -177,11 +266,11 @@ Description=$COIN_NAME service
 After=network.target
 
 [Service]
-User=root
-Group=root
+User=$RUNAS
+Group=$RUNAS
 
 Type=forking
-#PIDFile=$CONFIGFOLDER/$COIN_NAME.pid
+#PIDFile=$CONFIGFOLDER/$coin_name.pid
 
 ExecStart=$COIN_PATH$COIN_DAEMON -datadir=$CONFIGFOLDER -conf=$CONFIGFOLDER/$CONFIG_FILE -daemon
 ExecStop=-$COIN_PATH$COIN_CLI -datadir=$CONFIGFOLDER -conf=$CONFIGFOLDER/$CONFIG_FILE stop
@@ -203,11 +292,70 @@ EOF
   systemctl enable $COIN_SERVICE.service
 
   if [[ -z "$(ps axo cmd:100 | egrep $COIN_DAEMON)" ]]; then
-    echo -e "${RED}$COIN_NAME is not running${NC}, please investigate. You should start by running the following commands as root:"
+    echo -e "${RED}$COIN_NAME is not running${NC}, please investigate. You should start by running the following commands as $RUNAS:"
     echo -e "${GREEN}systemctl start $COIN_SERVICE.service"
     echo -e "systemctl status $COIN_SERVICE.service"
     echo -e "less /var/log/syslog${NC}"
     exit 1
+  fi
+}
+
+function configure_logrotate() {
+  echo -e "${GREEN}Configuring daemon log rotations...${NC}"
+  cat <<EOF >/etc/logrotate.d/$COIN_SERVICE
+$CONFIGFOLDER/debug.log
+{
+        su $RUNAS $RUNAS
+        size 100k
+        rotate 1
+        copytruncate
+        daily
+        missingok
+        notifempty
+        compress
+        nodelaycompress
+        sharedscripts
+}
+EOF
+}
+
+function install_sentinel() {
+  echo -e "${GREEN}Installing and setting up Sentinel...${NC}"
+  apt-get -y install python-virtualenv virtualenv git
+
+  local SENTINEL_PATH="sentinel-dacash"
+  cd $CONFIGHOME
+  git clone https://github.com/dacash-official/sentinel.git $SENTINEL_PATH
+  cd $SENTINEL_PATH
+
+  (
+    export HOME=$CONFIGHOME
+    virtualenv ./venv
+    ./venv/bin/pip install -r requirements.txt
+
+    echo -e "${GREEN}Testing Sentinel installation:${NC}"
+    ./venv/bin/py.test ./test
+
+    echo -e "${GREEN}Starting Sentinel for the first time (may take up to a minute)...${NC}"
+    echo -e "${RED}If masternode is not yet started, please ignore any error message below:${NC}"
+    ./venv/bin/python bin/sentinel.py
+  )
+
+  echo -e "${GREEN}Installing user crontab job to run Sentinel periodically...${NC}"
+  local JOB="* * * * * cd $CONFIGHOME/$SENTINEL_PATH && ./venv/bin/python bin/sentinel.py >/dev/null 2>&1"
+
+  if ! (crontab -l | grep $SENTINEL_PATH &>/dev/null); then
+    cat <<EOF | crontab -
+$(crontab -l 2>/dev/null)
+
+# Sentinel for $coin_name
+$JOB
+EOF
+    echo -e "${GREEN}Crontab job installed:${NC}"
+    crontab -l | grep $SENTINEL_PATH
+  else
+    echo -e "${RED}Crontab job already exists:${NC}"
+    crontab -l | grep $SENTINEL_PATH
   fi
 }
 
@@ -222,17 +370,14 @@ function important_information() {
   echo -e "Status: ${RED}systemctl status $COIN_SERVICE.service${NC}"
   echo -e "Masternode status: ${RED}$COIN_CLI masternode status${NC}"
   echo -e "MASTERNODE PRIVATEKEY is: ${RED}$COINKEY${NC}"
-  if [[ -n $SENTINEL_REPO ]]; then
-    echo -e "${RED}Sentinel${NC} is installed in ${RED}$CONFIGFOLDER/sentinel${NC}"
-    echo -e "Sentinel logs is: ${RED}$CONFIGFOLDER/sentinel.log${NC}"
-  fi
   echo -e "${GREEN}================================================================================================================================${NC}"
   echo -e "Send exactly 1000 coins to an own address using your cold wallet."
   echo -e "After at least 1 confirmation enter the following command in your wallet debug console: ${RED}masternode outputs${NC}"
   echo -e "You should have a masternode collateral transaction hash and index (usually 0 or 1)."
   echo -e "Edit ${RED}masternode.conf${NC} file in your cold wallet data directory and add the following line:"
   echo -e "${GREEN}mn1 $NODEIP:$COIN_PORT $COINKEY your-tx-hash your-tx-index${NC}"
-  echo -e "Restart your wallet, wait for at least 15 confirmations of collateral tx and start your masternode."
+  echo -e "(on Windows you may use 'Tools -> Open Masternode Configurtion File' menu item to edit it)"
+  echo -e "Restart your wallet, wait for at least ${RED}${BLINK}15 confirmations${NC} of collateral tx and start your masternode."
   echo -e "${GREEN}================================================================================================================================${NC}"
   echo -e "This script is based on the work of zoldur, ${RED}https://github.com/zoldur/${NC}"
   echo -e "Used according to GNU GPL 3.0 terms and conditions."
@@ -245,13 +390,29 @@ function important_information() {
 }
 
 ##### Entry point #####
-checks
-prepare_system
-download_node
-get_ip
-create_config
-create_key
-update_config
-enable_firewall
-configure_systemd
-important_information
+clear
+check_system
+ask_components
+if [ "$INSTALL_MASTERNODE" = "1" ]; then
+  check_daemon
+  prepare_system
+  download_node
+  while ! get_ip; do : ; done
+  create_config
+  create_key
+  update_config
+  #enable_firewall
+  enable_firewall_app
+  configure_systemd
+  configure_logrotate
+fi
+if [ "$INSTALL_SENTINEL" = "1" ]; then
+  install_sentinel
+fi
+if [ "$INSTALL_MASTERNODE" = "1" ]; then
+  important_information
+fi
+if [ "$INSTALL_SENTINEL" = "1" ]; then
+  echo -e "${RED}Sentinel${NC} is installed in ${RED}$CONFIGFOLDER/sentinel${NC}"
+  echo -e "Sentinel log is: ${RED}$CONFIGFOLDER/sentinel.log${NC}"
+fi
